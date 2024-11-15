@@ -91,5 +91,6 @@ pythonenv*
 
 ### vscode ###
 .vscode
+plugin.log
 
 # End of https://www.toptal.com/developers/gitignore/api/python,vscode

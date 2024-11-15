@@ -1,273 +1,213 @@
 import decimal
 import locale
 import requests
-import decimal
-import xml.etree.ElementTree as ET
-import os
-import datetime
-
-from plugin.translation import _
+import json
 from flox import Flox
-
+from typing import List, Dict
 
 class Currency(Flox):
     locale.setlocale(locale.LC_ALL, "")
-    ratesURL = "http://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
-    # TODO - save list to settings and update from each XML download and just use this list as a first time default
-    CURRENCIES = [
-        "AUD",
-        "BGN",
-        "BRL",
-        "CAD",
-        "CHF",
-        "CNY",
-        "CZK",
-        "DKK",
-        "GBP",
-        "HKD",
-        "HRK",
-        "HUF",
-        "IDR",
-        "ILS",
-        "INR",
-        "ISK",
-        "JPY",
-        "KRW",
-        "MXN",
-        "MYR",
-        "NOK",
-        "NZD",
-        "PHP",
-        "PLN",
-        "RON",
-        "RUB",
-        "SEK",
-        "SGD",
-        "THB",
-        "TRY",
-        "USD",
-        "ZAR",
-        "XXX",
-        "EUR",
-    ]
-
+    ratesURL = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/eur.json"
+    
+    # Define ALLOWED_CURRENCIES set here with all the currencies you provided (in lowercase)
+    ALLOWED_CURRENCIES = {
+        "aed", "afn", "all", "amd", "ang", "aoa", "ars", "aud", "awg", "azn",
+        "bam", "bbd", "bdt", "bgn", "bhd", "bif", "bmd", "bnd", "bob", "brl",
+        "bsd", "btn", "bwp", "byn", "bzd", "cad", "cdf", "chf", "clp", "cny",
+        "cop", "crc", "cuc", "cup", "cve", "czk", "djf", "dkk", "dop", "dzd",
+        "egp", "ern", "etb", "eur", "fjd", "fkp", "gbp", "gel", "ggp", "ghs",
+        "gip", "gmd", "gnf", "gtq", "gyd", "hkd", "hnl", "hrk", "htg", "huf",
+        "idr", "ils", "imp", "inr", "iqd", "irr", "isk", "jep", "jmd", "jod",
+        "jpy", "kes", "kgs", "khr", "kmf", "kpw", "krw", "kwd", "kyd", "kzt",
+        "lak", "lbp", "lkr", "lrd", "lsl", "lyd", "mad", "mdl", "mga", "mkd",
+        "mmk", "mnt", "mop", "mru", "mur", "mvr", "mwk", "mxn", "myr", "mzn",
+        "nad", "ngn", "nio", "nok", "npr", "nzd", "omr", "pab", "pen", "pgk",
+        "php", "pkr", "pln", "pyg", "qar", "ron", "rsd", "rub", "rwf", "sar",
+        "sbd", "scr", "sdg", "sek", "sgd", "shp", "sll", "sos", "spl", "srd",
+        "stn", "svc", "syp", "szl", "thb", "tjs", "tmt", "tnd", "top", "try",
+        "ttd", "tvd", "twd", "tzs", "uah", "ugx", "usd", "uyu", "uzs", "vef",
+        "vnd", "vuv", "wst", "xaf", "xcd", "xdr", "xof", "xpf", "yer", "zar",
+        "zmw", "zwd"
+    }
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.max_age = self.settings.get("max_age")
         self.logger_level("info")
+        self.CURRENCIES = self.get_available_currencies()
 
-    def query(self, query):
-        q = query.strip()
-        args = q.split(" ")
-        if len(args) == 1:
-            self.add_item(
-                title=_("<Amount> <Source currency code> <Destination currency code>"),
-                subtitle=_(
-                    "There will be a short delay if the currency rates file needs to be downloaded"
-                ),
-            )
+    def get_available_currencies(self) -> List[str]:
+        try:
+            response = requests.get(self.ratesURL)
+            if response.status_code == 200:
+                data = response.json()
+                currencies = [curr.upper() for curr in data['eur'].keys() 
+                            if curr in self.ALLOWED_CURRENCIES]
+                if 'EUR' not in currencies:
+                    currencies.append('EUR')
+                return sorted(currencies)
+            return sorted([curr.upper() for curr in self.ALLOWED_CURRENCIES])
+        except Exception as e:
+            self.logger.error(f"Error fetching currencies: {str(e)}")
+            return sorted([curr.upper() for curr in self.ALLOWED_CURRENCIES])
 
-        elif len(args) == 2:
-            hint = self.applicablerates(args[1])
+    def get_rates(self) -> Dict:
+        try:
+            response = requests.get(self.ratesURL)
+            if response.status_code == 200:
+                data = response.json()
+                filtered_rates = {
+                    'date': data['date'],
+                    'eur': {k: v for k, v in data['eur'].items() 
+                           if k in self.ALLOWED_CURRENCIES}
+                }
+                return filtered_rates
+            return None
+        except Exception as e:
+            self.logger.error(f"Error fetching rates: {str(e)}")
+            return None
+
+    def currconv(self, amount: str, source_curr: str, dest_curr: str) -> List:
+        source_curr_lower = source_curr.lower()
+        dest_curr_lower = dest_curr.lower()
+
+        if source_curr_lower not in self.ALLOWED_CURRENCIES:
+            return [f"Currency not supported: {source_curr}"]
+        if dest_curr_lower not in self.ALLOWED_CURRENCIES:
+            return [f"Currency not supported: {dest_curr}"]
+
+        rates_data = self.get_rates()
+        if not rates_data:
+            return ["Error fetching rates"]
+
+        try:
+            date = rates_data['date']
+            rates = rates_data['eur']
+            
+            if decimal.Decimal(amount) == 0:
+                return ["Warning - amount entered must be greater than zero"]
+
+            if source_curr_lower == 'eur':
+                rate = rates[dest_curr_lower]
+                converted = decimal.Decimal(amount) * decimal.Decimal(str(rate))
+            elif dest_curr_lower == 'eur':
+                rate = rates[source_curr_lower]
+                converted = decimal.Decimal(amount) / decimal.Decimal(str(rate))
+            else:
+                source_rate = rates[source_curr_lower]
+                dest_rate = rates[dest_curr_lower]
+                eur_amount = decimal.Decimal(amount) / decimal.Decimal(str(source_rate))
+                converted = eur_amount * decimal.Decimal(str(dest_rate))
+
+            return [date, converted]
+        except KeyError:
+            return ["Invalid currency code"]
+        except Exception as e:
+            return [f"Conversion error: {str(e)}"]
+
+    def format_number(self, number: decimal.Decimal) -> str:
+        return locale.format_string("%.2f", number, grouping=True)
+
+    def query(self, query: str) -> None:
+        if not query:
             self.add_item(
-                title=(f", ".join([f"{x}" for x in hint])),
-                subtitle=_("Source currency"),
+                title="Currency Converter",
+                subtitle="Usage: <amount> <source currency> <target currency>",
+                icon=self.icon
             )
-        elif len(args) == 3:
-            if len(args[2]) <= 2:
-                hint = self.applicablerates(args[2])
+            return
+
+        parts = query.strip().split()
+        
+        if len(parts) == 1:
+            search_term = parts[0].upper()
+            matching_currencies = [curr for curr in self.CURRENCIES if curr.startswith(search_term)]
+            
+            for curr in matching_currencies[:8]:
                 self.add_item(
-                    title=(f", ".join([f"{x}" for x in hint])),
-                    subtitle=_("Destination currency"),
+                    title=f"Currency: {curr}",
+                    subtitle=f"Available currency: {curr}",
+                    icon=self.icon
                 )
-            else:
-                # Check codes are three letters
-                if len(args[1]) != 3 or len(args[2]) != 3:
-                    self.add_item(
-                        title=_("Please enter three character currency codes")
-                    )
+            return
 
-                # Check first argument is valid currency code
-                elif len(args[1]) == 3 and args[1].upper() not in self.CURRENCIES:
-                    self.add_item(title=_("Error - source is not a valid currency"))
-
-                # Check second argument is valid currency code
-                elif len(args[2]) == 3 and args[2].upper() not in self.CURRENCIES:
-                    self.add_item(
-                        title=_("Error - destination is not a valid currency")
-                    )
-
-                # Check amount is an int or a float
-                elif (
-                    not args[0].isdigit() and not args[0].replace(".", "", 1).isdigit()
-                ):
-                    self.add_item(title=_("Error - amount must be numeric"))
-
-                # If source and dest currencies the same just return entered amount
-                elif args[1].upper() == args[2].upper():
-                    self.add_item(
-                        title="{} {} = {} {}".format(
-                            args[0], args[1].upper(), args[0], args[2].upper()
-                        )
-                    )
-                # Do the conversion
-                else:
-                    # First strip any commas from the amount
-                    args[0] = args[0].replace(",", "")
-                    # Get the rates
-                    ratesxml_returncode = self.getrates_xml(self.max_age)
-                    if ratesxml_returncode == 200:
-                        ratedict = self.populate_rates("eurofxref-daily.xml")
-                        conv = self.currconv(ratedict, args[1], args[2], args[0])
-                        if len(conv) == 1:
-                            # Something has gone wrong
-                            self.add_item(title="{}".format(conv[0]))
-                        else:
-                            # Set up some decimal precisions to use in the result
-                            # amount and converted amount use precision as entered. Conversion rate uses min 3 places
-                            if "." in args[0]:
-                                dec_prec = len(args[0].split(".")[1])
-                                if dec_prec < 3:
-                                    dec_prec2 = 3
-                                else:
-                                    dec_prec2 = dec_prec
-                            else:
-                                dec_prec = 1
-                                dec_prec2 = 3
-                            fmt_str = "%.{0:d}f".format(dec_prec)
-
-                            self.add_item(
-                                title=(
-                                    f"{locale.format_string(fmt_str, float(args[0]), grouping=True)} {args[1].upper()} = "
-                                    f"{locale.format_string(fmt_str, round(decimal.Decimal(conv[1]), dec_prec), grouping=True)} "
-                                    f"{args[2].upper()} "
-                                    f"(1 {args[1].upper()} = "
-                                    f"{round(decimal.Decimal(conv[1]) / decimal.Decimal(args[0]),dec_prec2,)} "
-                                    f"{args[2].upper()})"
-                                ),
-                                subtitle=_("Rates date : {}").format(conv[0]),
-                            )
-                    else:
-                        self.add_item(
-                            title=_("Couldn't download the rates file"),
-                            subtitle=_("{} - check log for more details").format(
-                                ratesxml_returncode
-                            ),
-                        )
-
-        else:
-            pass
-
-    def populate_rates(self, xml):
-        tree = ET.parse(xml)
-        root = tree.getroot()
-        rates = {}
-        for root_Cube in root.findall(
-            "{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube"
-        ):
-            for time_Cube in root_Cube.findall(
-                "{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube"
-            ):
-                rates.update({"date": "{}".format(time_Cube.attrib["time"])})
-                for currency_Cube in time_Cube.findall(
-                    "{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube"
-                ):
-                    rates.update(
-                        {
-                            "{}".format(currency_Cube.attrib["currency"]): "{}".format(
-                                currency_Cube.attrib["rate"]
-                            )
-                        }
-                    )
-        return rates
-
-    def getrates_xml(self, max_age):
-        xmlfile = "eurofxref-daily.xml"
-        exists = os.path.isfile(xmlfile)
-        getnewfile = True
-        if exists:
-            current = datetime.datetime.now()
-            t = os.path.getmtime(xmlfile)
-            file = datetime.datetime.fromtimestamp(t)
-            if (current - file) > datetime.timedelta(hours=int(max_age)):
-                getnewfile = True
-            else:
-                getnewfile = False
-        if getnewfile:
+        elif len(parts) == 2:
+            amount = parts[0]
+            source_curr = parts[1].upper()
+            
             try:
-                r = requests.get(self.ratesURL)
-                with open(xmlfile, "wb") as file:
-                    file.write(r.content)
-                self.logger.info(f"Download rates file returned {r.status_code}")
-                return r.status_code
-            except requests.exceptions.HTTPError as e:
-                self.logger.error(f"HTTP Error - {repr(e)}")
-                return _("HTTP Error")
-            except requests.exceptions.ConnectionError as e:
-                self.logger.error(f"Connection Error - {repr(e)}")
-                return _("Connection Error")
-            except requests.exceptions.RequestException as e:
-                self.logger.error(f"Unspecified Download Error - {repr(e)}")
-                return _("Unspecifed Download Error")
-        else:
-            return 200
-
-    def currconv(self, rates, sourcecurr, destcurr, amount):
-        # converted list - if error return error message, if not error return date and converted amount
-        converted = []
-        # Check source currency is in the rates dict -catch odd errors like the bank suspending some rates
-        if (not sourcecurr.upper() in rates and sourcecurr.upper() != "EUR") or (
-            not destcurr.upper() in rates and destcurr.upper() != "EUR"
-        ):
-            self.logger.error(
-                f"Source or destination currency not in rates dict - {sourcecurr} or {destcurr}"
-            )
-            converted.append(
-                _("Error - expected source or destination currency not in rates file")
-            )
-            return converted
-        # Check for zero amount, warn and don't convert
-        if decimal.Decimal(amount) == 0:
-            converted.append(_("Warning - amount entered must be greater than zero"))
-            return converted 
-
-        # sourcerate = 1
-        destrate = 1
-        if destcurr.upper() == "EUR":
-            for rate in rates:
-                if rate == "date":
-                    converted.append(rates[rate])
-                if rate == sourcecurr.upper():
-                    converted.append(
-                        (1 / decimal.Decimal(rates[rate])) * decimal.Decimal(amount)
-                    )
-                    return converted
-        else:
-            for rate in rates:
-                if rate == "date":
-                    converted.append(rates[rate])
-                if rate == destcurr.upper():
-                    # If source is EURO then straight convert and return
-                    if sourcecurr.upper() == "EUR":
-                        converted.append(
-                            decimal.Decimal(rates[rate]) * decimal.Decimal(amount)
+                decimal.Decimal(amount)
+                
+                for curr in self.CURRENCIES[:8]:
+                    if curr != source_curr:
+                        self.add_item(
+                            title=f"Convert {amount} {source_curr} to {curr}",
+                            subtitle=f"Press enter to convert to {curr}",
+                            icon=self.icon
                         )
-                        return converted
-                    else:
-                        destrate = rates[rate]
-                if rate == sourcecurr.upper():
-                    sourcerate = rates[rate]
-        # Convert via the EURO
-        sourceEuro = (1 / decimal.Decimal(sourcerate)) * decimal.Decimal(amount)
-        converted.append(decimal.Decimal(sourceEuro) * decimal.Decimal(destrate))
-        return converted
+            except:
+                self.add_item(
+                    title="Invalid amount",
+                    subtitle="Please enter a valid number",
+                    icon=self.icon
+                )
+            return
 
-    def applicablerates(self, ratestr):
-        choices = [i for i in self.CURRENCIES if i.upper().startswith(ratestr.upper())]
-        if not choices:
-            choices.append(_("No matches found"))
-        return choices
+        elif len(parts) == 3:
+            amount = parts[0]
+            source_curr = parts[1].upper()
+            dest_curr = parts[2].upper()
 
+            try:
+                decimal.Decimal(amount)
+                result = self.currconv(amount, source_curr, dest_curr)
+                
+                if len(result) == 2:
+                    date, converted_amount = result
+                    formatted_amount = self.format_number(converted_amount)
+                    rate = converted_amount / decimal.Decimal(amount)
+                    formatted_rate = self.format_number(rate)
+                    
+                    self.add_item(
+                        title=f"{amount} {source_curr} = {formatted_amount} {dest_curr}",
+                        subtitle=f"Rate: 1 {source_curr} = {formatted_rate} {dest_curr} (as of {date})",
+                        icon=self.icon,
+                        context=[amount, formatted_amount, source_curr, dest_curr],
+                        copy=f"{formatted_amount} {dest_curr}"
+                    )
+                else:
+                    self.add_item(
+                        title=result[0],
+                        subtitle="Please try again",
+                        icon=self.icon
+                    )
+            except decimal.InvalidOperation:
+                self.add_item(
+                    title="Invalid amount",
+                    subtitle="Please enter a valid number",
+                    icon=self.icon
+                )
+            except Exception as e:
+                self.add_item(
+                    title="Error occurred",
+                    subtitle=str(e),
+                    icon=self.icon
+                )
+
+    def context_menu(self, data):
+        amount, converted, source, dest = data
+        self.add_item(
+            title=f"Copy: {amount} {source}",
+            subtitle="Copy original amount",
+            icon=self.icon,
+            copy=f"{amount} {source}"
+        )
+        self.add_item(
+            title=f"Copy: {converted} {dest}",
+            subtitle="Copy converted amount",
+            icon=self.icon,
+            copy=f"{converted} {dest}"
+        )
 
 if __name__ == "__main__":
     Currency()
